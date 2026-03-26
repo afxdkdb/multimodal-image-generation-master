@@ -37,25 +37,6 @@
             margin-bottom: 10px;
         }
         
-        .status-bar {
-            display: flex;
-            justify-content: center;
-            gap: 20px;
-            margin-top: 20px;
-        }
-        
-        .status-item {
-            background: rgba(255,255,255,0.1);
-            padding: 8px 16px;
-            border-radius: 20px;
-            font-size: 0.9rem;
-        }
-        
-        .status-item.loaded {
-            background: rgba(0,255,127,0.2);
-            color: #00ff7f;
-        }
-        
         .tabs {
             display: flex;
             gap: 10px;
@@ -72,6 +53,7 @@
             text-align: center;
             font-size: 1.1rem;
             transition: all 0.3s;
+            color: #fff;
         }
         
         .tab:hover {
@@ -327,92 +309,212 @@
             display: block;
             border-radius: 10px;
         }
+        
+        .controlnet-section {
+            margin-top: 20px;
+            padding: 15px;
+            background: #2c3e50;
+            border-radius: 10px;
+            border: 1px solid #9b59b6;
+        }
+        
+        .controlnet-section h4 {
+            color: #9b59b6;
+            margin-bottom: 15px;
+        }
+        
+        .controlnet-upload {
+            border: 2px dashed rgba(155, 89, 182, 0.5);
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 15px;
+        }
+        
+        .controlnet-upload:hover {
+            border-color: #9b59b6;
+            background: rgba(155, 89, 182, 0.1);
+        }
+        
+        .controlnet-preview {
+            max-width: 100%;
+            border-radius: 8px;
+            display: none;
+        }
+        
+        .controlnet-preview.active {
+            display: block;
+        }
+        
+        .controlnet-hint {
+            font-size: 0.85rem;
+            color: #888;
+            margin-top: 10px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <header>
+  <header>
             <h1>🎨 多模态图像生成系统</h1>
             <p>输入文本生成图像，自动生成描述，支持语音播报</p>
-            <div class="status-bar">
-                <div class="status-item" id="sd-status">Stable Diffusion: 加载中...</div>
-                <div class="status-item" id="blip-status">BLIP: 加载中...</div>
-                <div class="status-item" id="tts-status">TTS: 加载中...</div>
-            </div>
         </header>
         
-        <!-- 文本生成图像面板 -->
-        <div class="panel active" id="generate-panel">
+        <!-- 模式切换导航 -->
+        <div class="tabs">
+            <div class="tab active" id="tab-sd21" onclick="switchMode('sd21')">🚀 SD 2.1 基础生成</div>
+            <div class="tab" id="tab-controlnet" onclick="switchMode('controlnet')">🎯 SD 1.5 + ControlNet</div>
+        </div>
+        
+        <!-- SD 2.1 基础生成面板 -->
+        <div class="panel active" id="sd21-panel">
             <div class="main-content">
                 <div class="left-panel">
                     <div class="input-group">
                         <label>输入文本提示词</label>
-                        <textarea id="prompt" placeholder="输入你的创意，例如：一只可爱的猫咪..."></textarea>
+                        <textarea id="sd21-prompt" placeholder="输入你的创意，例如：一只可爱的猫咪..."></textarea>
                     </div>
                     
-                    <button id="enhance-btn" onclick="enhancePrompt()" style="background: linear-gradient(90deg, #9b59b6, #8e44ad); width: 100%; margin-bottom: 20px;">✨ 扩充提示词</button>
+                    <button id="sd21-enhance-btn" onclick="enhancePrompt('sd21')" style="background: linear-gradient(90deg, #9b59b6, #8e44ad); width: 100%; margin-bottom: 20px;">✨ 扩充提示词</button>
                     
-                    <div id="enhanced-section" style="display: none;">
+                    <div id="sd21-enhanced-section" style="display: none;">
                         <div class="input-group">
                             <label>扩充后的提示词（可编辑）:</label>
-                            <textarea id="enhanced-prompt" placeholder="扩充后的提示词将显示在这里..."></textarea>
+                            <textarea id="sd21-enhanced-prompt" placeholder="扩充后的提示词将显示在这里..."></textarea>
                         </div>
                     </div>
                     
-                    <div class="loading" id="enhance-loading" style="display: none;">
+                    <div class="loading" id="sd21-enhance-loading" style="display: none;">
                         <div class="spinner"></div>
                         <p>正在扩充提示词，请稍候...</p>
                     </div>
                     
-                    <button id="clip-btn" onclick="evaluatePrompt()" style="background: linear-gradient(90deg, #3498db, #2980b9); width: 100%; margin-bottom: 20px;">🔍 CLIP提示词评估</button>
+                    <div class="slider-group">
+                        <div class="slider-item">
+                            <label>推理步数: <span id="sd21-steps-value">50</span></label>
+                            <input type="range" id="sd21-steps" min="10" max="100" value="50" oninput="document.getElementById('sd21-steps-value').textContent = this.value">
+                        </div>
+                        <div class="slider-item">
+                            <label>引导系数: <span id="sd21-guidance-value">10.0</span></label>
+                            <input type="range" id="sd21-guidance" min="1" max="20" value="10.0" step="0.5" oninput="document.getElementById('sd21-guidance-value').textContent = this.value">
+                        </div>
+                    </div>
                     
-                    <div id="clip-result" style="display: none; margin-bottom: 20px; padding: 10px; background: #2c3e50; border-radius: 5px; border: 1px solid #00d2ff;">
-                        <h4 style="margin: 0 0 10px 0; color: #fff;">CLIP 评估结果</h4>
-                        <p id="clip-quality-score" style="margin: 5px 0; font-size: 14px; color: #fff;"></p>
-                        <p id="clip-similarity-score" style="margin: 5px 0; font-size: 14px; color: #fff;"></p>
-                        <p id="clip-word-count" style="margin: 5px 0; font-size: 14px; color: #fff;"></p>
-                        <p id="clip-details" style="margin: 5px 0; font-size: 14px; color: #fff;"></p>
+                    <button id="sd21-generate-btn" onclick="generateImage('sd21')" style="width: 100%;">🚀 生成图像</button>
+                </div>
+                
+                <div class="right-panel">
+                    <div class="loading" id="sd21-generate-loading">
+                        <div class="spinner"></div>
+                        <p id="sd21-loading-text">正在生成图像，请稍候...</p>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="sd21-progress-fill"></div>
+                        </div>
+                        <p class="progress-percent" id="sd21-progress-percent">0%</p>
+                    </div>
+                    
+                    <div class="result" id="sd21-generate-result" style="display: none;">
+                        <h3>生成结果</h3>
+                        <img id="sd21-result-image" src="" alt="Generated Image">
+                        <div class="caption-result">
+                            <label>图像描述:</label>
+                            <p id="sd21-result-caption"></p>
+                        </div>
+                        <div class="clip-result" id="sd21-clip-evaluation" style="display: none; margin-top: 10px; padding: 10px; background: #2c3e50; border-radius: 5px; border: 1px solid #00d2ff;">
+                            <label style="color: #fff;">CLIP 语义相似度:</label>
+                            <p id="sd21-clip-quality" style="color: #fff;"></p>
+                            <p id="sd21-clip-similarity" style="color: #fff;"></p>
+                        </div>
+                        <button id="sd21-speak-btn" onclick="speakCaption('sd21')" style="margin-top: 15px; background: linear-gradient(90deg, #e74c3c, #c0392b);">🔊 语音播报</button>
+                    </div>
+                    <div id="sd21-placeholder-result" class="placeholder-result">
+                        <p>生成的图片将显示在这里</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- SD 1.5 + ControlNet 面板 -->
+        <div class="panel" id="controlnet-panel">
+            <div class="main-content">
+                <div class="left-panel">
+                    <div class="input-group">
+                        <label>输入文本提示词</label>
+                        <textarea id="cn-prompt" placeholder="输入你的创意，例如：一只可爱的猫咪..."></textarea>
+                    </div>
+                    
+                    <button id="cn-enhance-btn" onclick="enhancePrompt('cn')" style="background: linear-gradient(90deg, #9b59b6, #8e44ad); width: 100%; margin-bottom: 20px;">✨ 扩充提示词</button>
+                    
+                    <div id="cn-enhanced-section" style="display: none;">
+                        <div class="input-group">
+                            <label>扩充后的提示词（可编辑）:</label>
+                            <textarea id="cn-enhanced-prompt" placeholder="扩充后的提示词将显示在这里..."></textarea>
+                        </div>
+                    </div>
+                    
+                    <div class="loading" id="cn-enhance-loading" style="display: none;">
+                        <div class="spinner"></div>
+                        <p>正在扩充提示词，请稍候...</p>
                     </div>
                     
                     <div class="slider-group">
                         <div class="slider-item">
-                            <label>推理步数: <span id="steps-value">50</span></label>
-                            <input type="range" id="steps" min="10" max="100" value="50" oninput="document.getElementById('steps-value').textContent = this.value">
+                            <label>推理步数: <span id="cn-steps-value">50</span></label>
+                            <input type="range" id="cn-steps" min="10" max="100" value="50" oninput="document.getElementById('cn-steps-value').textContent = this.value">
                         </div>
                         <div class="slider-item">
-                            <label>引导系数: <span id="guidance-value">10.0</span></label>
-                            <input type="range" id="guidance" min="1" max="20" value="10.0" step="0.5" oninput="document.getElementById('guidance-value').textContent = this.value">
+                            <label>引导系数: <span id="cn-guidance-value">10.0</span></label>
+                            <input type="range" id="cn-guidance" min="1" max="20" value="10.0" step="0.5" oninput="document.getElementById('cn-guidance-value').textContent = this.value">
                         </div>
                     </div>
                     
-                    <button id="generate-btn" onclick="generateImage()" style="width: 100%;">🚀 生成图像</button>
+                    <div class="controlnet-section">
+                        <h4>🎯 ControlNet 控制图像</h4>
+                        
+                        <div style="margin-bottom: 15px;">
+                            <p style="color: #aaa; margin-bottom: 8px;">📤 上传参考图片（自动转为 Canny 边缘图）：</p>
+                            <div id="cn-upload-container">
+                                <div class="controlnet-upload" id="cn-upload-box" onclick="document.getElementById('cn-reference-file').click()">
+                                    <input type="file" id="cn-reference-file" accept="image/*" style="display: none;" onchange="handleReferenceUpload(event)">
+                                    <p style="color: #aaa;">📁 点击上传参考图片</p>
+                                    <p class="controlnet-hint">上传真实图片，自动生成 Canny 边缘图</p>
+                                </div>
+                            </div>
+                            <img id="cn-reference-preview" class="controlnet-preview" alt="参考图预览" style="display: none;">
+                            <img id="cn-canny-preview" class="controlnet-preview" alt="Canny 边缘图预览" style="display: none;">
+                        </div>
+                    </div>
+                    
+                    <button id="cn-generate-btn" onclick="generateImage('cn')" style="width: 100%;">🚀 生成图像</button>
                 </div>
                 
                 <div class="right-panel">
-                    <div class="loading" id="generate-loading">
+                    <div class="loading" id="cn-generate-loading">
                         <div class="spinner"></div>
-                        <p id="loading-text">正在生成图像，请稍候...</p>
+                        <p id="cn-loading-text">正在生成图像，请稍候...</p>
                         <div class="progress-bar">
-                            <div class="progress-fill" id="progress-fill"></div>
+                            <div class="progress-fill" id="cn-progress-fill"></div>
                         </div>
-                        <p class="progress-percent" id="progress-percent">0%</p>
+                        <p class="progress-percent" id="cn-progress-percent">0%</p>
                     </div>
                     
-                    <div class="result" id="generate-result" style="display: none;">
+                    <div class="result" id="cn-generate-result" style="display: none;">
                         <h3>生成结果</h3>
-                        <img id="result-image" src="" alt="Generated Image">
+                        <img id="cn-result-image" src="" alt="Generated Image">
                         <div class="caption-result">
                             <label>图像描述:</label>
-                            <p id="result-caption"></p>
+                            <p id="cn-result-caption"></p>
                         </div>
-                        <div class="clip-result" id="clip-evaluation" style="display: none; margin-top: 10px; padding: 10px; background: #2c3e50; border-radius: 5px; border: 1px solid #00d2ff;">
-                            <label style="color: #fff;">CLIP 提示词评估:</label>
-                            <p id="clip-quality" style="color: #fff;"></p>
-                            <p id="clip-similarity" style="color: #fff;"></p>
+                        <div class="clip-result" id="cn-clip-evaluation" style="display: none; margin-top: 10px; padding: 10px; background: #2c3e50; border-radius: 5px; border: 1px solid #00d2ff;">
+                            <label style="color: #fff;">CLIP 语义相似度:</label>
+                            <p id="cn-clip-quality" style="color: #fff;"></p>
+                            <p id="cn-clip-similarity" style="color: #fff;"></p>
                         </div>
-                        <button id="speak-btn" onclick="speakCaption()" style="margin-top: 15px; background: linear-gradient(90deg, #e74c3c, #c0392b);">🔊 语音播报</button>
+                        <button id="cn-speak-btn" onclick="speakCaption('cn')" style="margin-top: 15px; background: linear-gradient(90deg, #e74c3c, #c0392b);">🔊 语音播报</button>
                     </div>
-                    <div id="placeholder-result" class="placeholder-result">
+                    <div id="cn-placeholder-result" class="placeholder-result">
                         <p>生成的图片将显示在这里</p>
                     </div>
                 </div>
@@ -422,36 +524,94 @@
     
     <script>
         const API_BASE = 'http://localhost:8000';
+        let currentMode = 'sd21';
+        let cnControlnetImageBase64 = null;
+        let cnReferenceImageBase64 = null;
         
-        // 页面加载时检查模型状态
-        async function checkStatus() {
-            try {
-                const res = await fetch(`${API_BASE}/status`);
-                const data = await res.json();
-                
-                document.getElementById('sd-status').textContent = `SD: ${data.models_loaded.sd ? '✅ 已加载' : '⏳ 待加载'}`;
-                document.getElementById('sd-status').className = data.models_loaded.sd ? 'status-item loaded' : 'status-item';
-                
-                document.getElementById('blip-status').textContent = `BLIP: ${data.models_loaded.blip ? '✅ 已加载' : '⏳ 待加载'}`;
-                document.getElementById('blip-status').className = data.models_loaded.blip ? 'status-item loaded' : 'status-item';
-                
-                document.getElementById('tts-status').textContent = `TTS: ${data.models_loaded.tts ? '✅ 已加载' : '⏳ 待加载'}`;
-                document.getElementById('tts-status').className = data.models_loaded.tts ? 'status-item loaded' : 'status-item';
-            } catch (e) {
-                document.getElementById('sd-status').textContent = '❌ 后端未连接';
+        // 切换模式
+        function switchMode(mode) {
+            currentMode = mode;
+            
+            document.getElementById('tab-sd21').classList.remove('active');
+            document.getElementById('tab-controlnet').classList.remove('active');
+            document.getElementById('sd21-panel').classList.remove('active');
+            document.getElementById('controlnet-panel').classList.remove('active');
+            
+            if (mode === 'sd21') {
+                document.getElementById('tab-sd21').classList.add('active');
+                document.getElementById('sd21-panel').classList.add('active');
+            } else {
+                document.getElementById('tab-controlnet').classList.add('active');
+                document.getElementById('controlnet-panel').classList.add('active');
             }
         }
         
-        async function enhancePrompt() {
-            const prompt = document.getElementById('prompt').value.trim();
+        // 获取当前模式的ID前缀
+        function getPrefix() {
+            return currentMode === 'sd21' ? 'sd21' : 'cn';
+        }
+        
+        // 获取当前模式的元素
+        function getElement(id) {
+            const prefix = getPrefix();
+            return document.getElementById(prefix + '-' + id);
+        }
+        
+        // 处理参考图上传 (仅ControlNet模式)
+        async function handleReferenceUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const prefix = getPrefix();
+            
+            const reader = new FileReader();
+            reader.onload = async function(e) {
+                cnReferenceImageBase64 = e.target.result.split(',')[1];
+                document.getElementById(prefix + '-reference-preview').src = e.target.result;
+                document.getElementById(prefix + '-reference-preview').style.display = 'block';
+                
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                try {
+                    const res = await fetch(`${API_BASE}/process-canny`, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const data = await res.json();
+                    
+                    document.getElementById(prefix + '-canny-preview').src = data.canny_image;
+                    document.getElementById(prefix + '-canny-preview').style.display = 'block';
+                    
+                    cnControlnetImageBase64 = data.canny_image.split(',')[1];
+                    
+                    document.getElementById(prefix + '-upload-container').innerHTML = `
+                        <div style="padding: 15px; background: rgba(155, 89, 182, 0.2); border-radius: 8px; border: 1px solid #9b59b6;">
+                            <p style="color: #9b59b6; margin: 0; font-weight: bold;">✅ 已上传参考图片</p>
+                            <p style="color: #aaa; font-size: 12px; margin-top: 5px;">图片已锁定，将基于此Canny图生成</p>
+                        </div>
+                    `;
+                    
+                    alert('✅ Canny 边缘图已生成！点击"生成图像"按钮开始生成。');
+                } catch (e) {
+                    alert('处理图片失败: ' + e.message);
+                }
+            };
+            reader.readAsDataURL(file);
+        }
+        
+        async function enhancePrompt(mode) {
+            const prefix = mode;
+            const prompt = document.getElementById(prefix + '-prompt').value.trim();
             if (!prompt) {
                 alert('请输入提示词');
                 return;
             }
             
-            const btn = document.getElementById('enhance-btn');
-            const loading = document.getElementById('enhance-loading');
-            const section = document.getElementById('enhanced-section');
+            const btn = document.getElementById(prefix + '-enhance-btn');
+            const loading = document.getElementById(prefix + '-enhance-loading');
+            const section = document.getElementById(prefix + '-enhanced-section');
             
             btn.disabled = true;
             loading.style.display = 'block';
@@ -466,7 +626,7 @@
                 
                 const data = await res.json();
                 
-                document.getElementById('enhanced-prompt').value = data.enhanced_prompt;
+                document.getElementById(prefix + '-enhanced-prompt').value = data.enhanced_prompt;
                 section.style.display = 'block';
             } catch (e) {
                 alert('扩充提示词失败: ' + e.message);
@@ -476,80 +636,28 @@
             }
         }
         
-        async function evaluatePrompt() {
-            const prompt = document.getElementById('prompt').value.trim();
+        async function generateImage(mode) {
+            const prefix = mode;
+            const prompt = document.getElementById(prefix + '-prompt').value.trim();
             if (!prompt) {
                 alert('请输入提示词');
                 return;
             }
             
-            let promptToEvaluate = prompt;
-            
-            const enhancedPromptEl = document.getElementById('enhanced-prompt');
-            const enhancedSection = document.getElementById('enhanced-section');
-            if (enhancedSection.style.display !== 'none' && enhancedPromptEl && enhancedPromptEl.value.trim()) {
-                promptToEvaluate = enhancedPromptEl.value.trim();
-            } else {
-                alert('请先点击"扩充提示词"按钮生成扩展后的提示词，再进行CLIP评估');
-                return;
-            }
-            
-            const btn = document.getElementById('clip-btn');
-            const resultDiv = document.getElementById('clip-result');
-            
-            btn.disabled = true;
-            btn.textContent = '🔄 评估中...';
-            
-            try {
-                const res = await fetch(`${API_BASE}/clip-evaluate`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({prompt: promptToEvaluate})
-                });
-                
-                if (!res.ok) {
-                    throw new Error('评估服务暂时不可用');
-                }
-                
-                const data = await res.json();
-                
-                document.getElementById('clip-quality-score').textContent = `✅ 质量评分: ${(data.quality_score * 100).toFixed(1)}%`;
-                document.getElementById('clip-similarity-score').textContent = `🔗 语义相似度: ${(data.similarity_score * 100).toFixed(1)}%`;
-                document.getElementById('clip-word-count').textContent = `📝 词数: ${data.word_count}`;
-                document.getElementById('clip-details').textContent = `🏷️ 细节描述: ${data.has_details ? '有' : '无'}`;
-                
-                resultDiv.style.display = 'block';
-                
-                window.lastClipEvaluation = data;
-            } catch (e) {
-                alert('CLIP评估失败: ' + e.message);
-            } finally {
-                btn.disabled = false;
-                btn.textContent = '🔍 CLIP提示词评估';
-            }
-        }
-        
-        async function generateImage() {
-            const prompt = document.getElementById('prompt').value.trim();
-            if (!prompt) {
-                alert('请输入提示词');
-                return;
-            }
-            
-            const btn = document.getElementById('generate-btn');
-            const loading = document.getElementById('generate-loading');
-            const result = document.getElementById('generate-result');
-            const placeholder = document.getElementById('placeholder-result');
+            const btn = document.getElementById(prefix + '-generate-btn');
+            const loading = document.getElementById(prefix + '-generate-loading');
+            const result = document.getElementById(prefix + '-generate-result');
+            const placeholder = document.getElementById(prefix + '-placeholder-result');
             
             btn.disabled = true;
             loading.classList.add('active');
             result.style.display = 'none';
             placeholder.style.display = 'none';
             
-            const numSteps = parseInt(document.getElementById('steps').value);
+            const numSteps = parseInt(document.getElementById(prefix + '-steps').value);
             
-            const progressFill = document.getElementById('progress-fill');
-            const progressPercent = document.getElementById('progress-percent');
+            const progressFill = document.getElementById(prefix + '-progress-fill');
+            const progressPercent = document.getElementById(prefix + '-progress-percent');
             let progress = 0;
             const progressInterval = setInterval(() => {
                 progress += 100 / (numSteps * 2.5);
@@ -559,27 +667,44 @@
             }, 1000);
             
             try {
-                const enhancedPrompt = document.getElementById('enhanced-prompt').value.trim();
-                const requestBody = {
+                const enhancedPrompt = document.getElementById(prefix + '-enhanced-prompt').value.trim();
+                let requestBody = {
                     prompt: prompt,
-                    num_inference_steps: parseInt(document.getElementById('steps').value),
-                    guidance_scale: parseFloat(document.getElementById('guidance').value)
+                    num_inference_steps: parseInt(document.getElementById(prefix + '-steps').value),
+                    guidance_scale: parseFloat(document.getElementById(prefix + '-guidance').value)
                 };
                 
                 if (enhancedPrompt) {
                     requestBody.enhanced_prompt = enhancedPrompt;
                 }
                 
-                if (window.lastClipEvaluation) {
-                    requestBody.clip_evaluation_score = window.lastClipEvaluation.quality_score;
-                    requestBody.use_clip_optimization = true;
-                }
+                let res;
                 
-                const res = await fetch(`${API_BASE}/generate`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(requestBody)
-                });
+                if (mode === 'cn' && cnControlnetImageBase64) {
+                    let controlnetBody = {
+                        prompt: prompt,
+                        control_image: cnControlnetImageBase64,
+                        num_inference_steps: parseInt(document.getElementById(prefix + '-steps').value),
+                        guidance_scale: parseFloat(document.getElementById(prefix + '-guidance').value),
+                        controlnet_conditioning_scale: 1.0
+                    };
+                    
+                    if (enhancedPrompt) {
+                        controlnetBody.enhanced_prompt = enhancedPrompt;
+                    }
+                    
+                    res = await fetch(`${API_BASE}/generate-controlnet`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(controlnetBody)
+                    });
+                } else {
+                    res = await fetch(`${API_BASE}/generate`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(requestBody)
+                    });
+                }
                 
                 const data = await res.json();
                 
@@ -591,42 +716,28 @@
                     loading.classList.remove('active');
                 }, 500);
                 
-                document.getElementById('result-image').src = data.image;
-                document.getElementById('result-caption').textContent = data.caption;
+                document.getElementById(prefix + '-result-image').src = data.image;
+                document.getElementById(prefix + '-result-caption').textContent = data.caption;
                 
                 if (data.used_num_steps && data.used_guidance) {
-                    document.getElementById('steps').value = data.used_num_steps;
-                    document.getElementById('steps-value').textContent = data.used_num_steps;
-                    document.getElementById('guidance').value = data.used_guidance;
-                    document.getElementById('guidance-value').textContent = data.used_guidance;
+                    document.getElementById(prefix + '-steps').value = data.used_num_steps;
+                    document.getElementById(prefix + '-steps-value').textContent = data.used_num_steps;
+                    document.getElementById(prefix + '-guidance').value = data.used_guidance;
+                    document.getElementById(prefix + '-guidance-value').textContent = data.used_guidance;
                 }
                 
                 if (data.clip_evaluation) {
                     const clip = data.clip_evaluation;
-                    let optimizationInfo = '';
-                    if (data.used_num_steps !== undefined && data.used_guidance !== undefined) {
-                        const originalSteps = parseInt(document.getElementById('steps').value);
-                        const originalGuidance = parseFloat(document.getElementById('guidance').value);
-                        if (data.used_num_steps !== originalSteps || data.used_guidance !== originalGuidance) {
-                            optimizationInfo = ` | 🔧 已优化: 步数${originalSteps}→${data.used_num_steps}, 系数${originalGuidance}→${data.used_guidance}`;
-                        } else {
-                            optimizationInfo = ` | ✅ 质量良好，保持原参数`;
-                        }
-                    } else {
-                        optimizationInfo = ` | ⚠️ 未进行CLIP优化`;
-                    }
-                    document.getElementById('clip-quality').textContent = `质量评分: ${(clip.quality_score * 100).toFixed(1)}% | 词数: ${clip.word_count} | 细节: ${clip.has_details ? '有' : '无'}${optimizationInfo}`;
-                    document.getElementById('clip-similarity').textContent = `相似度: ${(clip.similarity_score * 100).toFixed(1)}%`;
-                    document.getElementById('clip-evaluation').style.display = 'block';
+                    document.getElementById(prefix + '-clip-quality').textContent = `📊 CLIP 语义相似度: ${(clip.similarity_score * 100).toFixed(1)}%`;
+                    document.getElementById(prefix + '-clip-similarity').textContent = `💡 ${clip.interpretation}`;
+                    document.getElementById(prefix + '-clip-evaluation').style.display = 'block';
                 }
                 
-                document.getElementById('generate-result').style.display = 'block';
-                document.getElementById('placeholder-result').style.display = 'none';
+                document.getElementById(prefix + '-generate-result').style.display = 'block';
+                document.getElementById(prefix + '-placeholder-result').style.display = 'none';
                 
                 // TTS (默认启用)
-                document.getElementById('tts-status').textContent = 'TTS: ✅ 已加载';
-                document.getElementById('tts-status').className = 'status-item loaded';
-                speakText(data.caption);
+                speakCaption(prefix);
             } catch (e) {
                 alert('生成失败: ' + e.message);
             } finally {
@@ -635,28 +746,10 @@
             }
         }
         
-        async function speakText(text) {
-            try {
-                const res = await fetch(`${API_BASE}/tts`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({text: text})
-                });
-                
-                const data = await res.json();
-                const audio = new Audio(data.audio);
-                audio.play();
-            } catch (e) {
-                console.log('TTS播放失败:', e.message);
-            }
-        }
-        
-        function speakCaption() {
-            const caption = document.getElementById('result-caption').textContent;
+        function speakCaption(mode) {
+            const prefix = mode;
+            const caption = document.getElementById(prefix + '-result-caption').textContent;
             if (caption) {
-                document.getElementById('tts-status').textContent = 'TTS: ✅ 已加载';
-                document.getElementById('tts-status').className = 'status-item loaded';
-                
                 const utterance = new SpeechSynthesisUtterance(caption);
                 utterance.lang = 'zh-CN';
                 utterance.rate = 1.0;
@@ -664,9 +757,6 @@
             }
         }
         
-        // 定期检查状态
-        checkStatus();
-        setInterval(checkStatus, 5000);
     </script>
 </body>
 </html>

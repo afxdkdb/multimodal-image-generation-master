@@ -2,6 +2,7 @@ import os
 import torch
 import base64
 import io
+import numpy as np
 from PIL import Image
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,8 +10,23 @@ from pydantic import BaseModel
 import uvicorn
 import threading
 
-HF_TOKEN = 'your-huggingface-token'
-DEEPSEEK_API_KEY = 'sk-fd4346c63f3d490799d425ea6a79ea15'
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+HF_TOKEN = os.getenv('HF_TOKEN', '')
+DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')
+LOCAL_FILES_ONLY = os.getenv('LOCAL_FILES_ONLY', 'false').lower() == 'true'
+
+if not HF_TOKEN:
+    raise ValueError("HF_TOKEN 环境变量未设置！请在 .env 文件中配置或设置环境变量")
+if not DEEPSEEK_API_KEY:
+    raise ValueError("DEEPSEEK_API_KEY 环境变量未设置！请在 .env 文件中配置或设置环境变量")
+
+print(f"🔐 API Keys loaded: HF_TOKEN={'✓' if HF_TOKEN else '✗'}, DEEPSEEK={'✓' if DEEPSEEK_API_KEY else '✗'}")
+print(f"📁 LOCAL_FILES_ONLY: {LOCAL_FILES_ONLY}")
 
 app = FastAPI(title="Multimodal API")
 
@@ -26,20 +42,29 @@ image_generator = None
 captioner = None
 translator = None
 clip_alignment = None
+controlnet = None
 
 class GenerateRequest(BaseModel):
     prompt: str
     enhanced_prompt: str | None = None
     num_inference_steps: int = 50
     guidance_scale: float = 10.0
-    clip_evaluation_score: float | None = None
-    use_clip_optimization: bool = False
+    controlnet_image: str | None = None
+
+class ControlNetGenerateRequest(BaseModel):
+    prompt: str
+    control_image: str  # base64 encoded image
+    num_inference_steps: int = 50
+    guidance_scale: float = 10.0
+    controlnet_conditioning_scale: float = 1.0
+    enhanced_prompt: str | None = None
 
 class EnhanceRequest(BaseModel):
     prompt: str
 
 class CLIPEvaluateRequest(BaseModel):
     prompt: str
+    image: str | None = None
 
 def enhance_prompt(text: str) -> str:
     import requests
@@ -82,8 +107,8 @@ def get_translator():
     if translator is None:
         from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
         print("Loading Translator (zh->en)...")
-        tokenizer = AutoTokenizer.from_pretrained("Helsinki-NLP/opus-mt-zh-en", token=HF_TOKEN, local_files_only=True)
-        model = AutoModelForSeq2SeqLM.from_pretrained("Helsinki-NLP/opus-mt-zh-en", token=HF_TOKEN, local_files_only=True)
+        tokenizer = AutoTokenizer.from_pretrained("Helsinki-NLP/opus-mt-zh-en", token=HF_TOKEN, local_files_only=LOCAL_FILES_ONLY)
+        model = AutoModelForSeq2SeqLM.from_pretrained("Helsinki-NLP/opus-mt-zh-en", token=HF_TOKEN, local_files_only=LOCAL_FILES_ONLY)
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model = model.to(device)
         translator = {"tokenizer": tokenizer, "model": model, "device": device}
@@ -113,14 +138,14 @@ def get_generator():
         import sys
         from io import StringIO
         
-        print("Loading Stable Diffusion from cache...")
+        print("Loading Stable Diffusion 2.1...")
         image_generator = StableDiffusionPipeline.from_pretrained(
             "sd2-community/stable-diffusion-2-1-base",
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
             safety_checker=None,
             requires_safety_checker=False,
             token=HF_TOKEN,
-            local_files_only=True
+            local_files_only=LOCAL_FILES_ONLY
         )
         image_generator.scheduler = DDIMScheduler.from_config(image_generator.scheduler.config)
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -132,9 +157,9 @@ def get_captioner():
     global captioner
     if captioner is None:
         from transformers import BlipProcessor, BlipForConditionalGeneration
-        print("Loading BLIP from cache...")
-        processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base", token=HF_TOKEN, local_files_only=True)
-        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base", token=HF_TOKEN, local_files_only=True)
+        print("Loading BLIP Large...")
+        processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-large", token=HF_TOKEN, local_files_only=LOCAL_FILES_ONLY)
+        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-large", token=HF_TOKEN, local_files_only=LOCAL_FILES_ONLY)
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model = model.to(device)
         captioner = {"processor": processor, "model": model}
@@ -145,62 +170,75 @@ def get_clip():
     global clip_alignment
     if clip_alignment is None:
         from transformers import CLIPProcessor, CLIPModel
-        print("Loading CLIP for prompt alignment...")
-        clip_alignment = CLIPModel.from_pretrained("openai/clip-vit-base-patch32", token=HF_TOKEN, local_files_only=False)
-        processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32", token=HF_TOKEN, local_files_only=False)
+        print("Loading CLIP for image-text similarity...")
+        clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32", token=HF_TOKEN, local_files_only=LOCAL_FILES_ONLY)
+        processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32", token=HF_TOKEN, local_files_only=LOCAL_FILES_ONLY)
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        clip_alignment = clip_alignment.to(device)
-        clip_alignment.eval()
-        clip_alignment = {"model": clip_alignment, "processor": processor, "device": device}
+        clip_model = clip_model.to(device)
+        clip_model.eval()
+        clip_alignment = {"model": clip_model, "processor": processor, "device": device}
         print(f"CLIP loaded on {device}!")
     return clip_alignment
 
-def evaluate_prompt_with_clip(prompt, target_words=None):
+def compute_image_text_similarity(prompt: str, image: Image.Image):
+    """
+    正确的 CLIP 语义相似度计算方法：
+    1. 用 CLIP 编码提示词 -> text_features
+    2. 用 CLIP 编码生成的图像 -> image_features
+    3. 计算两者的余弦相似度 -> 这才是真正的语义匹配度
+    """
     clip = get_clip()
     
-    quality_refs = [
-        "a detailed high quality realistic photograph",
-        "a beautiful artistic illustration",
-        "a clear detailed image with good composition",
-        "a poor low quality blurry uncertain image"
-    ]
-    
-    all_texts = [prompt] + quality_refs
-    inputs = clip["processor"](text=all_texts, return_tensors="pt", padding=True)
+    inputs = clip["processor"](text=[prompt], images=image, return_tensors="pt", padding=True)
     inputs = {k: v.to(clip["device"]) for k, v in inputs.items()}
     
     with torch.no_grad():
-        text_features = clip["model"].get_text_features(**inputs)
+        outputs = clip["model"](**inputs)
+        text_features = outputs.text_embeds
+        image_features = outputs.image_embeds
+        
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
     
-    prompt_feature = text_features[0:1]
-    quality_features = text_features[1:]
-    
-    similarities = (prompt_feature * quality_features).sum(dim=-1).cpu().numpy()
-    
-    positive_score = (similarities[0] + similarities[1] + similarities[2]) / 3
-    negative_score = similarities[3]
-    
-    quality_score = float((positive_score - negative_score + 1) / 2)
-    quality_score = max(0.1, min(quality_score, 0.95))
-    
-    similarity_score = 0.5
-    has_details = any(word in prompt.lower() for word in ['color', 'style', 'light', 'background', 'beautiful', 'detailed', 'high quality'])
-    
-    if target_words:
-        target_inputs = clip["processor"](text=[target_words], return_tensors="pt", padding=True)
-        target_inputs = {k: v.to(clip["device"]) for k, v in target_inputs.items()}
-        with torch.no_grad():
-            target_features = clip["model"].get_text_features(**target_inputs)
-            target_features = target_features / target_features.norm(dim=-1, keepdim=True)
-        similarity_score = (prompt_feature * target_features).sum(dim=-1).item()
+    similarity = (text_features * image_features).sum(dim=-1).item()
     
     return {
-        "quality_score": quality_score,
-        "similarity_score": similarity_score,
-        "word_count": len(prompt.split()),
-        "has_details": has_details
+        "similarity_score": float(similarity),
+        "interpretation": "相似度越高表示生成的图像与提示词语义匹配度越好"
     }
+
+def get_controlnet():
+    global controlnet
+    if controlnet is None:
+        from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
+        print("Loading ControlNet (Canny)...")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        controlnet = ControlNetModel.from_pretrained(
+            "lllyasviel/sd-controlnet-canny",
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+            token=HF_TOKEN,
+            local_files_only=LOCAL_FILES_ONLY
+        )
+        
+        print("Loading SD 1.5 base model...")
+        pipe = StableDiffusionControlNetPipeline.from_pretrained(
+            "runwayml/stable-diffusion-v1-5",
+            controlnet=controlnet,
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+            safety_checker=None,
+            requires_safety_checker=False,
+            token=HF_TOKEN,
+            local_files_only=LOCAL_FILES_ONLY
+        )
+        pipe = pipe.to(device)
+        
+        controlnet = {
+            "pipeline": pipe,
+            "device": device
+        }
+        print(f"ControlNet loaded on {device}!")
+    return controlnet
 
 @app.get("/")
 def root():
@@ -233,11 +271,62 @@ def enhance_prompt_api(req: EnhanceRequest):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/process-canny")
+async def process_canny_image(file: UploadFile = File(...)):
+    try:
+        import cv2
+        import numpy as np
+        
+        contents = await file.read()
+        image = Image.open(io.BytesIO(contents)).convert("RGB")
+        
+        # 转换为 numpy 数组
+        img_array = np.array(image)
+        
+        # 转为灰度图
+        if len(img_array.shape) == 3:
+            gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = img_array
+        
+        # Canny 边缘检测
+        low_threshold = 100
+        high_threshold = 200
+        edges = cv2.Canny(gray, low_threshold, high_threshold)
+        
+        # 转为3通道
+        edges = edges[:, :, None]
+        edges = np.concatenate([edges, edges, edges], axis=2)
+        
+        # 转回 PIL Image
+        canny_image = Image.fromarray(edges)
+        
+        # 返回 base64
+        img_buffer = io.BytesIO()
+        canny_image.save(img_buffer, format="PNG")
+        img_str = base64.b64encode(img_buffer.getvalue()).decode()
+        
+        return {
+            "canny_image": f"data:image/png;base64,{img_str}",
+            "original_size": {"width": image.width, "height": image.height}
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/clip-evaluate")
 def clip_evaluate_api(req: CLIPEvaluateRequest):
     try:
         translated = translate_to_english(req.prompt)
-        result = evaluate_prompt_with_clip(translated)
+        
+        if req.image:
+            image_data = base64.b64decode(req.image)
+            image = Image.open(io.BytesIO(image_data)).convert("RGB")
+            result = compute_image_text_similarity(translated, image)
+        else:
+            result = {"error": "请提供图片以计算语义相似度"}
+        
         return result
     except Exception as e:
         import traceback
@@ -251,29 +340,13 @@ def generate_image(req: GenerateRequest):
         if req.enhanced_prompt:
             translated_prompt = translate_to_english(req.enhanced_prompt)
             final_prompt = translated_prompt
-            target_words = translate_to_english(req.prompt)
         else:
             final_prompt = translate_to_english(req.prompt)
             translated_prompt = final_prompt
-            target_words = None
-
-        clip_evaluation = evaluate_prompt_with_clip(final_prompt, target_words)
-        print(f"CLIP Prompt Evaluation: {clip_evaluation}")
 
         num_steps = req.num_inference_steps
         guidance = req.guidance_scale
         
-        if req.use_clip_optimization and req.clip_evaluation_score is not None:
-            quality_score = req.clip_evaluation_score
-            if quality_score < 0.5:
-                num_steps = min(num_steps + 20, 100)
-                guidance = min(guidance + 3, 20)
-                print(f"CLIP Optimization: Low quality ({quality_score:.2f}), increasing steps to {num_steps}, guidance to {guidance}")
-            elif quality_score < 0.7:
-                num_steps = min(num_steps + 10, 100)
-                guidance = min(guidance + 1.5, 20)
-                print(f"CLIP Optimization: Medium quality ({quality_score:.2f}), increasing steps to {num_steps}, guidance to {guidance}")
-
         pipe = get_generator()
         
         import os
@@ -286,7 +359,7 @@ def generate_image(req: GenerateRequest):
                 guidance_scale=guidance,
                 height=768,
                 width=768,
-                enable_vae_tiling=False
+                enable_vae_tiling=True
             ).images[0]
         
         img_buffer = io.BytesIO()
@@ -296,8 +369,11 @@ def generate_image(req: GenerateRequest):
         cap = get_captioner()
         inputs = cap["processor"](image, return_tensors="pt").to(cap["model"].device)
         with torch.no_grad():
-            output = cap["model"].generate(**inputs, max_length=50)
+            output = cap["model"].generate(**inputs, max_length=100)
         caption = cap["processor"].decode(output[0], skip_special_tokens=True)
+        
+        clip_evaluation = compute_image_text_similarity(final_prompt, image)
+        print(f"CLIP Image-Text Similarity: {clip_evaluation}")
         
         return {
             "image": f"data:image/png;base64,{img_str}",
@@ -322,10 +398,65 @@ async def caption_image(file: UploadFile = File(...)):
         cap = get_captioner()
         inputs = cap["processor"](image, return_tensors="pt").to(cap["model"].device)
         with torch.no_grad():
-            output = cap["model"].generate(**inputs, max_length=50)
+            output = cap["model"].generate(**inputs, max_length=100)
         caption = cap["processor"].decode(output[0], skip_special_tokens=True)
         
         return {"caption": caption}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/generate-controlnet")
+async def generate_with_controlnet(req: ControlNetGenerateRequest):
+    try:
+        import os
+        os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+        
+        controlnet_data = get_controlnet()
+        pipe = controlnet_data["pipeline"]
+        
+        image_data = base64.b64decode(req.control_image)
+        control_image = Image.open(io.BytesIO(image_data)).convert("RGB")
+        control_image = control_image.resize((768, 768))
+        
+        if req.enhanced_prompt:
+            translated = translate_to_english(req.enhanced_prompt)
+        else:
+            translated = translate_to_english(req.prompt)
+        
+        with torch.inference_mode():
+            image = pipe(
+                translated,
+                image=control_image,
+                num_inference_steps=req.num_inference_steps,
+                guidance_scale=req.guidance_scale,
+                controlnet_conditioning_scale=req.controlnet_conditioning_scale,
+                height=768,
+                width=768,
+            ).images[0]
+        
+        img_buffer = io.BytesIO()
+        image.save(img_buffer, format="PNG")
+        img_str = base64.b64encode(img_buffer.getvalue()).decode()
+        
+        cap = get_captioner()
+        inputs = cap["processor"](image, return_tensors="pt").to(cap["model"].device)
+        with torch.no_grad():
+            output = cap["model"].generate(**inputs, max_length=100)
+        caption = cap["processor"].decode(output[0], skip_special_tokens=True)
+        
+        clip_evaluation = compute_image_text_similarity(translated, image)
+        
+        return {
+            "image": f"data:image/png;base64,{img_str}",
+            "original_prompt": req.prompt,
+            "translated_prompt": translated,
+            "caption": caption,
+            "clip_evaluation": clip_evaluation,
+            "used_num_steps": req.num_inference_steps,
+            "used_guidance": req.guidance_scale
+        }
     except Exception as e:
         import traceback
         traceback.print_exc()
