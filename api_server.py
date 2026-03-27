@@ -1,4 +1,7 @@
 import os
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+os.environ['CUDA_VISIBLE_DEVICES'] = ''
+
 import torch
 import base64
 import io
@@ -25,8 +28,8 @@ if not HF_TOKEN:
 if not DEEPSEEK_API_KEY:
     raise ValueError("DEEPSEEK_API_KEY 环境变量未设置！请在 .env 文件中配置或设置环境变量")
 
-print(f"🔐 API Keys loaded: HF_TOKEN={'✓' if HF_TOKEN else '✗'}, DEEPSEEK={'✓' if DEEPSEEK_API_KEY else '✗'}")
-print(f"📁 LOCAL_FILES_ONLY: {LOCAL_FILES_ONLY}")
+print(f"[API] HF_TOKEN={'OK' if HF_TOKEN else 'MISSING'}, DEEPSEEK={'OK' if DEEPSEEK_API_KEY else 'MISSING'}")
+print(f"[CONFIG] LOCAL_FILES_ONLY: {LOCAL_FILES_ONLY}")
 
 app = FastAPI(title="Multimodal API")
 
@@ -161,8 +164,11 @@ def get_captioner():
         processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-large", token=HF_TOKEN, local_files_only=LOCAL_FILES_ONLY)
         model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-large", token=HF_TOKEN, local_files_only=LOCAL_FILES_ONLY)
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = model.to(device)
-        captioner = {"processor": processor, "model": model}
+        if device == "cuda":
+            model.enable_cpu_offload()
+        else:
+            model = model.to(device)
+        captioner = {"processor": processor, "model": model, "device": device}
         print(f"BLIP loaded on {device}!")
     return captioner
 
@@ -174,7 +180,10 @@ def get_clip():
         clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32", token=HF_TOKEN, local_files_only=LOCAL_FILES_ONLY)
         processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32", token=HF_TOKEN, local_files_only=LOCAL_FILES_ONLY)
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        clip_model = clip_model.to(device)
+        if device == "cuda":
+            clip_model.enable_cpu_offload()
+        else:
+            clip_model = clip_model.to(device)
         clip_model.eval()
         clip_alignment = {"model": clip_model, "processor": processor, "device": device}
         print(f"CLIP loaded on {device}!")
@@ -212,11 +221,11 @@ def get_controlnet():
     if controlnet is None:
         from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
         print("Loading ControlNet (Canny)...")
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = "cpu"
         
-        controlnet = ControlNetModel.from_pretrained(
+        controlnet_model = ControlNetModel.from_pretrained(
             "lllyasviel/sd-controlnet-canny",
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+            torch_dtype=torch.float32,
             token=HF_TOKEN,
             local_files_only=LOCAL_FILES_ONLY
         )
@@ -224,13 +233,14 @@ def get_controlnet():
         print("Loading SD 1.5 base model...")
         pipe = StableDiffusionControlNetPipeline.from_pretrained(
             "runwayml/stable-diffusion-v1-5",
-            controlnet=controlnet,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+            controlnet=controlnet_model,
+            torch_dtype=torch.float32,
             safety_checker=None,
             requires_safety_checker=False,
             token=HF_TOKEN,
             local_files_only=LOCAL_FILES_ONLY
         )
+        
         pipe = pipe.to(device)
         
         controlnet = {
